@@ -27,6 +27,9 @@ from scipy import signal
 from utils import data_transforms
 from utils import get_paste_kernel, kernel_map
 
+import pickle
+import time
+
 def generate_data_field(eye_point):
     """eye_point is (x, y) and between 0 and 1"""
     height, width = 224, 224
@@ -102,9 +105,9 @@ def test(net, test_image_path, eye):
     f_point = np.array([w_index / 56., h_index / 56.])
 
 
-    return heatmap, f_point[0], f_point[1] 
+    return heatmap, f_point[0], f_point[1]
 
-def draw_result(image_path, eye, heatmap, gaze_point):
+def draw_result(image_path, eye, heatmap, gaze_point, results_path='tmp.png'):
     x1, y1 = eye
     x2, y2 = gaze_point
     im = cv2.imread(image_path)
@@ -123,31 +126,94 @@ def draw_result(image_path, eye, heatmap, gaze_point):
 
     heatmap = (0.8 * heatmap.astype(np.float32) + 0.2 * im.astype(np.float32)).astype(np.uint8)
     img = np.concatenate((im, heatmap), axis=1)
-    cv2.imwrite('tmp.png', img)
-    
+    cv2.imwrite(results_path, img)
+
     return img
-    
+
 def main():
+
+    # DEFINE PARAMETERS
+
+    CHECKPOINT_PATH = '/media/samsung2080pc/New Volume/SAMSUNG/gazefollowing/trial1_Adam'
+    EPOCH = 25
+    LOAD_PATH = os.path.join(CHECKPOINT_PATH, 'model_epoch'+str(EPOCH)+'.pkl')
+    DATASET_PATH = '/home/samsung2080pc/Documents/ObjectOfInterestV22Dataset'
+    TEST_PATH = '/home/samsung2080pc/Documents/ObjectOfInterestV22Dataset/test.pickle'
+    NUM_TEST = 0
+
 
     net = GazeNet()
     net = DataParallel(net)
     net.cuda()
 
-    pretrained_dict = torch.load('../model/pretrained_model.pkl')
+    # pretrained_dict = torch.load('../model/pretrained_model.pkl')
+
+    pretrained_dict = torch.load(LOAD_PATH)
     model_dict = net.state_dict()
     pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
     model_dict.update(pretrained_dict)
     net.load_state_dict(model_dict)
-    
-    test_image_path = sys.argv[1]
-    x = float(sys.argv[2])
-    y = float(sys.argv[3])
-    heatmap, p_x, p_y = test(net, test_image_path, (x, y))
-    draw_result(test_image_path, (x, y), heatmap, (p_x, p_y))
 
-    print(p_x, p_y)
+    f = open(TEST_PATH, 'rb')
+    test_data = pickle.load(f)
+    test_img_path = test_data[0]['filename']
+    test_img_path = os.path.join(DATASET_PATH, test_img_path)
+    h,w = cv2.imread(test_img_path).shape[:2]
+    if NUM_TEST == 0:
+        NUM_TEST = len(test_data)
 
-    
+    save_path = os.path.join(CHECKPOINT_PATH, 'epoch_'+str(EPOCH))
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+
+    start_time = time.time()
+    results_pkl = []
+    for i in tqdm(range(NUM_TEST)):
+
+        save_path = os.path.join(CHECKPOINT_PATH, 'epoch_'+str(EPOCH), 'out'+str(i).zfill(4)+'.png')
+
+        # test_image_path = sys.argv[1]
+        # x = float(sys.argv[2])
+        # y = float(sys.argv[3])
+        test_image_path = test_data[i]['filename']
+        test_image_path = os.path.join(DATASET_PATH, test_image_path)
+        x = test_data[i]['hx']/w
+        y = test_data[i]['hy']/h
+        # print(test_image_path,x,y)
+        heatmap, p_x, p_y = test(net, test_image_path, (x, y))
+        output = {  # PREDICTIONS
+                    'predictions':{
+                        'heatmap': heatmap,
+                        'p_x': p_x,
+                        'p_y': p_y
+                        },
+                    # INPUTS
+                    'inputs':{
+                        'image_path': test_data[i]['filename'],
+                        'eye_x': x,
+                        'eye_y': y,
+                        },
+                    # GROUND TRUTH
+                    'gt':{
+                        'gaze_cx': test_data[i]['gaze_cx'],
+                        'gaze_cy': test_data[i]['gaze_cy']
+                        }
+                    }
+        results_pkl.append(output)
+        draw_result(test_image_path, (x, y), heatmap, (p_x, p_y), save_path)
+
+    end_time = time.time()
+    process_time = end_time - start_time
+
+    outfilename = os.path.join(CHECKPOINT_PATH, 'epoch_'+str(EPOCH), 'allresults.pkl')
+
+
+    with open(outfilename, 'wb') as outfile:
+        pickle.dump(results_pkl, outfile)
+    print(results_pkl)
+    print('Processed %i images in %f seconds.' %(NUM_TEST, process_time))
+    # print(p_x, p_y)
+
+
 if __name__ == '__main__':
     main()
-

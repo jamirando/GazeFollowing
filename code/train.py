@@ -27,8 +27,9 @@ from utils import data_transforms
 from utils import get_paste_kernel, kernel_map
 
 
+CHECKPOINT_PATH = '/media/samsung2080pc/New Volume/SAMSUNG/gazefollowing/trial1'
 # log setting
-log_dir = 'log/'
+log_dir = os.path.join(CHECKPOINT_PATH,'log')
 if not os.path.exists(log_dir):
     os.makedirs(log_dir)
 log_file = log_dir + 'train.log'
@@ -42,6 +43,12 @@ console.setLevel(logging.INFO)
 logging.getLogger('').addHandler(console)
 
 
+def totuple(a):
+    try:
+        return tuple(totuple(i) for i in a)
+    except TypeError:
+        return a
+
 class GazeDataset(Dataset):
     def __init__(self, root_dir, mat_file, training='train'):
         assert (training in set(['train', 'test']))
@@ -49,13 +56,43 @@ class GazeDataset(Dataset):
         self.mat_file = mat_file
         self.training = training
 
-        anns = loadmat(self.mat_file)
-        self.bboxes = anns[self.training + '_bbox']
-        self.gazes = anns[self.training + '_gaze']
-        self.paths = anns[self.training + '_path']
-        self.eyes = anns[self.training + '_eyes']
-        self.meta = anns[self.training + '_meta']
-        self.image_num = self.paths.shape[0]
+        # anns = loadmat(self.mat_file)
+        # self.bboxes = anns[self.training + '_bbox']
+        # self.gazes = anns[self.training + '_gaze']
+        # self.paths = anns[self.training + '_path']
+        # self.eyes = anns[self.training + '_eyes']
+        # self.meta = anns[self.training + '_meta']
+        # self.image_num = self.paths.shape[0]
+
+        import pickle
+
+        # self.bboxes = []
+        # self.gazes = []
+        # self.paths = []
+        # self.eyes = []
+
+        with open(mat_file, 'rb') as f:
+            self.data = pickle.load(f)
+            self.image_num = len(self.data)
+
+            # for i in range(self.image_num):
+                # print(data[i]['filename'])
+                # print(data[i]['ann']['bboxes'][-1,:])
+                # print(data[i]['gaze_cx'])
+                # print(data[i]['gaze_cy'])
+
+        #         self.paths.append(data[i]['filename'])
+        #         self.bboxes.append(data[i]['ann']['bboxes'][-1,:])
+        #         self.gazes.append([data[i]['gaze_cx'],data[i]['gaze_cy']])
+        #         self.eyes.append([data[i]['hx'],data[i]['hy']])
+        # self.bboxes = np.array(self.bboxes)
+        # self.gazes = np.array(self.gazes)
+        # self.eyes = np.array(self.eyes)
+        # self.bboxes = np.expand_dims(self.bboxes, axis=0)
+        # self.eyes = np.expand_dims(self.eyes, axis=0)
+        # self.gazes = np.expand_dims(self.gazes, axis=0)
+
+        #
 
         logging.info('%s contains %d images' % (self.mat_file, self.image_num))
 
@@ -80,37 +117,55 @@ class GazeDataset(Dataset):
         return self.image_num
 
     def __getitem__(self, idx):
-        image_path = self.paths[idx][0][0]
+        # print(self.data)
+        get_data = self.data[idx]
+        image_path = get_data['filename']
         image_path = os.path.join(self.root_dir, image_path)
 
-        box = self.bboxes[0, idx][0]
-        eye = self.eyes[0, idx][0]
-        # todo: process gaze differently for training or testing
-        gaze = self.gazes[0, idx].mean(axis=0)
-
         image = cv2.imread(image_path, cv2.IMREAD_COLOR)
+        self.height, self.width, _ = image.shape
+
+
+        #### NORMALIZE VARIABLES
+        x_0 = get_data['ann']['bboxes'][-1,0] / self.width # xmin_headbb
+        y_0 = get_data['ann']['bboxes'][-1,1] / self.height # ymin_headbb
+        x_1 = get_data['ann']['bboxes'][-1,2] / self.width # xmax_headbb
+        y_1 = get_data['ann']['bboxes'][-1,3] / self.height # ymax_headbb
+
+        x_c = get_data['hx']/ self.width   # use head coordinates for eyes
+        y_c = get_data['hy']/ self.height
+        eye = np.array([x_c, y_c])
+
+        gaze_x = get_data['gaze_cx']/ self.width
+        gaze_y = get_data['gaze_cy']/ self.height
+        gaze = np.array([gaze_x, gaze_y])
 
         if random.random() > 0.5 and self.training == 'train':
             eye = [1.0 - eye[0], eye[1]]
             gaze = [1.0 - gaze[0], gaze[1]]
             image = cv2.flip(image, 1)
-            
-        # crop face
-        x_c, y_c = eye
-        x_0 = x_c - 0.15
-        y_0 = y_c - 0.15
-        x_1 = x_c + 0.15
-        y_1 = y_c + 0.15
-        if x_0 < 0:
-            x_0 = 0
-        if y_0 < 0:
-            y_0 = 0
-        if x_1 > 1:
-            x_1 = 1
-        if y_1 > 1:
-            y_1 = 1
+
+            # box[0] = w-box[0]
+            # box[2] = w-box[2]
+        # # crop face
+        # x_c, y_c = eye
+        # x_0 = x_c - 0.15
+        # y_0 = y_c - 0.15
+        # x_1 = x_c + 0.15
+        # y_1 = y_c + 0.15
+        # if x_0 < 0:
+        #     x_0 = 0
+        # if y_0 < 0:
+        #     y_0 = 0
+        # if x_1 > 1:
+        #     x_1 = 1
+        # if y_1 > 1:
+        #     y_1 = 1
         h, w = image.shape[:2]
+        # print('h,w:',h,w, eye, x_c, y_c)
         face_image = image[int(y_0 * h):int(y_1 * h), int(x_0 * w):int(x_1 * w), :]
+        # face_image = image[int(box[1]):int(box[3]), int(box[0]):int(box[2])]
+        # print('\n\n\n\n',face_image.shape, box)
         # process face_image for face net
         face_image = cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB)
         face_image = Image.fromarray(face_image)
@@ -180,10 +235,16 @@ def test(net, test_data_loader):
         loss = heatmap_loss + m_angle_loss
 
 
-        total_loss.append([heatmap_loss.data[0],
-                          m_angle_loss.data[0], loss.data[0]])
+        # total_loss.append([heatmap_loss.data[0],
+        #                   m_angle_loss.data[0], loss.data[0]])
+        # logging.info('loss: %.5lf, %.5lf, %.5lf'%( \
+        #       heatmap_loss.data[0], m_angle_loss.data[0], loss.data[0]))
+
+
+        total_loss.append([heatmap_loss.item(),
+                          m_angle_loss.item(), loss.item()])
         logging.info('loss: %.5lf, %.5lf, %.5lf'%( \
-              heatmap_loss.data[0], m_angle_loss.data[0], loss.data[0]))
+              heatmap_loss.item(), m_angle_loss.item(), loss.item()))
 
         middle_output = direction.cpu().data.numpy()
         final_output = predict_heatmap.cpu().data.numpy()
@@ -200,14 +261,14 @@ def test(net, test_data_loader):
             f_error = f_point - gt_point
             f_dist = np.sqrt(f_error[0] ** 2 + f_error[1] ** 2)
 
-            # angle 
+            # angle
             f_direction = f_point - eye_point
             gt_direction = gt_point - eye_point
 
             norm_m = (m_direction[0] **2 + m_direction[1] ** 2 ) ** 0.5
             norm_f = (f_direction[0] **2 + f_direction[1] ** 2 ) ** 0.5
             norm_gt = (gt_direction[0] **2 + gt_direction[1] ** 2 ) ** 0.5
-            
+
             m_cos_sim = (m_direction[0]*gt_direction[0] + m_direction[1]*gt_direction[1]) / \
                         (norm_gt * norm_m + 1e-6)
             m_cos_sim = np.maximum(np.minimum(m_cos_sim, 1.0), -1.0)
@@ -218,7 +279,7 @@ def test(net, test_data_loader):
             f_cos_sim = np.maximum(np.minimum(f_cos_sim, 1.0), -1.0)
             f_angle = np.arccos(f_cos_sim) * 180 / np.pi
 
-            
+
             total_error.append([f_dist, m_angle, f_angle])
             info_list.append(list(f_point))
     info_list = np.array(info_list)
@@ -235,16 +296,20 @@ def test(net, test_data_loader):
 
 
 def main():
-    train_set = GazeDataset(root_dir='../GazeFollowData/',
-                            mat_file='../GazeFollowData/train_annotations.mat',
+    train_set = GazeDataset(root_dir='/home/samsung2080pc/Documents/ObjectOfInterestV22Dataset/',
+                            mat_file='/home/samsung2080pc/Documents/ObjectOfInterestV22Dataset/train.pickle',
                             training='train')
-    train_data_loader = DataLoader(train_set, batch_size=32 * 4,
+
+    train_data_loader = DataLoader(train_set, batch_size=3 * 4,
                                    shuffle=True, num_workers=16)
 
-    test_set = GazeDataset(root_dir='../GazeFollowData/',
-                           mat_file='../GazeFollowData/test2_annotations.mat',
-                           training='test')
-    test_data_loader = DataLoader(test_set, batch_size=32 * 4,
+    # train_data_loader = DataLoader(train_set, batch_size=1,
+    #                                shuffle=True, num_workers=1)
+
+    test_set = GazeDataset(root_dir='/home/samsung2080pc/Documents/ObjectOfInterestV22Dataset/',
+                            mat_file='/home/samsung2080pc/Documents/ObjectOfInterestV22Dataset/test.pickle',
+                            training='test')
+    test_data_loader = DataLoader(test_set, batch_size=1 * 4,
                                   shuffle=False, num_workers=8)
 
     net = GazeNet()
@@ -264,13 +329,13 @@ def main():
     method = 'Adam'
     learning_rate = 0.0001
 
-    optimizer_s1 = optim.Adam([{'params': net.module.face_net.parameters(), 
+    optimizer_s1 = optim.Adam([{'params': net.module.face_net.parameters(),
                                 'initial_lr': learning_rate},
-                               {'params': net.module.face_process.parameters(), 
+                               {'params': net.module.face_process.parameters(),
                                 'initial_lr': learning_rate},
-                               {'params': net.module.eye_position_transform.parameters(), 
+                               {'params': net.module.eye_position_transform.parameters(),
                                 'initial_lr': learning_rate},
-                               {'params': net.module.fusion.parameters(), 
+                               {'params': net.module.fusion.parameters(),
                                 'initial_lr': learning_rate}],
                                lr=learning_rate, weight_decay=0.0001)
     optimizer_s2 = optim.Adam([{'params': net.module.fpn_net.parameters(),
@@ -327,15 +392,21 @@ def main():
             loss.backward()
             optimizer.step()
 
-            running_loss.append([heatmap_loss.data[0],
-                                 m_angle_loss.data[0], loss.data[0]])
+            # print('\n\n\n\nmeow',heatmap_loss, m_angle_loss)
+            # print(heatmap_loss.data)
+            # running_loss.append([heatmap_loss.data[0],
+            #                      m_angle_loss.data[0], loss.data[0]])
+
+            running_loss.append([heatmap_loss.item(), m_angle_loss.item(), loss.item()])
+
             if i % 10 == 9:
                 logging.info('%s %s %s'%(str(np.mean(running_loss, axis=0)), method, str(lr_scheduler.get_lr())))
                 running_loss = []
 
         epoch += 1
 
-        save_path = '../model/two_stage_fpn_concat_multi_scale_'+method
+        # save_path = '../model/two_stage_fpn_concat_multi_scale_'+method
+        save_path = CHECKPOINT_PATH + '_' + method
         if not os.path.exists(save_path):
             os.makedirs(save_path)
         torch.save(net.state_dict(), save_path+'/model_epoch{}.pkl'.format(epoch))
